@@ -8,9 +8,10 @@ from email.mime.text import MIMEText
 
 
 def send_pdf(pdf_path: str) -> None:
-    sender = os.environ["GMAIL_USER"]
-    password = os.environ["GMAIL_APP_PASSWORD"]
-    recipient = os.environ.get("RECIPIENT_EMAIL", sender)
+    sender = os.environ["GMAIL_USER"].strip()
+    # Strip whitespace and non-ASCII chars that can appear when copy-pasting from Google
+    password = "".join(c for c in os.environ["GMAIL_APP_PASSWORD"] if ord(c) < 128).strip()
+    recipient = os.environ.get("RECIPIENT_EMAIL", sender).strip()
 
     date_str = datetime.now().strftime("%d %B %Y")
     filename = f"vibe_coding_{datetime.now().strftime('%Y%m%d')}.pdf"
