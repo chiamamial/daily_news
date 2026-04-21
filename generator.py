@@ -97,17 +97,19 @@ HTML_WRAPPER = """<!DOCTYPE html>
 def generate_html(articles: list[dict]) -> str:
     client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
+    # Cap at 10 articles to stay well within Groq free-tier TPM (12k)
+    capped = articles[:10]
     articles_text = "\n\n".join(
         f"[{i+1}] {a['title']}\n"
         f"Fonte: {a['source']} | URL: {a['url']}\n"
-        f"{a['snippet']}"
-        for i, a in enumerate(articles)
+        f"{a['snippet'][:150]}"
+        for i, a in enumerate(capped)
     )
 
     date_str = datetime.now().strftime("%d %B %Y")
     user_message = (
         f"Data di oggi: {date_str}\n\n"
-        f"Articoli raccolti ({len(articles)} totali):\n\n"
+        f"Articoli raccolti ({len(capped)} selezionati):\n\n"
         f"{articles_text}\n\n"
         f"Crea la presentazione."
     )
