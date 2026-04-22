@@ -1,119 +1,358 @@
+import json
 import os
 import re
 from datetime import datetime
 from groq import Groq
 from playwright.sync_api import sync_playwright
 
-
-# 16:9 at 96dpi → 1280×720px
 SLIDE_W = 1280
 SLIDE_H = 720
 
-SYSTEM_PROMPT = """Sei un editor tech senior e designer di presentazioni. Ogni giorno crei slide sul mondo del Vibe Coding — l'approccio in cui si programma guidando un'AI invece di scrivere codice manualmente.
+# ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
+# The LLM only decides content + which layout to use.
+# Python renders all HTML from templates.
 
-Il tuo processo è in DUE FASI:
+SYSTEM_PROMPT = """Sei un editor tech senior di una newsletter professionale sul Vibe Coding — l'approccio in cui si programma guidando un'AI invece di scrivere codice manualmente. I tuoi lettori sono developer e tech lead che usano AI ogni giorno nel loro lavoro.
 
-FASE 1 — RAGIONA SUL CONTENUTO (fallo mentalmente, non scriverlo nell'output)
-  1. Leggi tutti gli articoli e individua i temi dominanti della giornata.
-  2. Decidi il filo narrativo: c'è un tema forte? Più filoni separati? Una tensione tra posizioni opposte?
-  3. Per ogni blocco di contenuto, scegli il layout che lo serve meglio, non viceversa.
-
-FASE 2 — COSTRUISCI LE SLIDE
+Il tuo compito è trasformare articoli grezzi in una presentazione con valore editoriale reale. Non riassumi: interpreti, colleghi, dai un punto di vista.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DESIGN SYSTEM — rispetta sempre questi valori
+COME SCRIVERE — regole di stile obbligatorie
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Ogni slide: width:1280px; height:720px; overflow:hidden; position:relative; box-sizing:border-box; page-break-after:always; font-family:'Inter',system-ui,sans-serif;
+TITOLI (headline, title nei campi JSON):
+  ✗ SBAGLIATO: "OpenAI rilascia nuovo modello GPT-5"
+  ✓ GIUSTO:    "GPT-5 cambia le regole: cosa significa per chi usa AI per programmare"
+  ✗ SBAGLIATO: "Anthropic annuncia aggiornamenti a Claude"
+  ✓ GIUSTO:    "Claude diventa più autonomo — e il confine col programmatore si fa più sottile"
+  → Il titolo deve dire perché la notizia conta, non solo cosa è successo.
 
-COLORI:
-  bg-base:    #0f172a    (sfondo slide)
-  bg-card:    #1e293b    (card, colonne scure)
-  bg-card-2:  #162032    (variante card)
-  border:     #334155    (bordi sottili)
-  txt-1:      #f1f5f9    (testo primario)
-  txt-2:      #94a3b8    (testo secondario)
-  txt-3:      #64748b    (testo terziario, fonti)
-  indigo:     #6366f1    (accent principale)
-  indigo-lt:  #a5b4fc    (accent chiaro)
-  green:      #34d399
-  orange:     #fb923c
-  rose:       #f43f5e
+SINTESI (body, items):
+  ✗ SBAGLIATO: "L'azienda ha annunciato un nuovo prodotto con funzionalità avanzate."
+  ✓ GIUSTO:    "Cursor ha integrato la modalità agente direttamente nell'editor: ora puoi delegare task interi invece di singole modifiche. Per un developer che usa Vibe Coding, significa meno interruzioni e contesto che rimane aperto tra un'azione e l'altra."
+  → Rispondi sempre a: cosa è cambiato + perché un developer che usa AI se ne deve accorgere + quale impatto concreto ha sul suo flusso di lavoro.
 
-TIPOGRAFIA (font-size / font-weight):
-  Hero title:    56–72px / 900
-  Slide title:   28–36px / 800
-  Card title:    18–24px / 700
-  Body:          14–16px / 400, line-height 1.65
-  Label/tag:     11–12px / 700, uppercase, letter-spacing .08em
-  Fonte:         11px / 400, color txt-3
+ANALISI (why, points, context):
+  ✗ SBAGLIATO: "Questa notizia è importante per il settore tech."
+  ✓ GIUSTO:    "È la prima volta che un editor mainstream tratta l'agente come unità di lavoro primaria, non come feature aggiuntiva. Segnala che il mercato si sta spostando dal 'suggerimento di codice' all''esecuzione autonoma'."
+  → Esprimi un punto di vista. Individua il pattern che emerge, la tensione tra posizioni, il cambiamento che questa notizia accelera.
 
-SPAZIATURA: padding slide 56–80px; gap card 20–28px; border-radius card 14–18px.
+TAKEAWAY (closing):
+  ✗ SBAGLIATO: "Tieni d'occhio i nuovi sviluppi nel settore AI."
+  ✓ GIUSTO:    "Testa la modalità agente di Cursor su un task reale questa settimana — non per velocità, ma per capire dove il controllo ti manca ancora."
+  → Azione specifica, non consiglio generico. Il lettore deve poterla fare domani mattina.
 
-ELEMENTI DECORATIVI (opzionali, da usare con giudizio):
-  - radial-gradient come alone di sfondo: background:radial-gradient(circle, #6366f122 0%, transparent 65%)
-  - barra accent verticale: width:4px; height:28px; background:[colore]; border-radius:2px
-  - linea orizzontale accent: width:40px; height:3px; background:[colore]; border-radius:2px
-  - bordo sinistro card colorato: border-left:3px solid [colore]; (rimuovi border normale)
-  - pillola tag: padding:5px 12px; border-radius:99px; border:1px solid [colore]40; background:[colore]18
+HEADLINE hero:
+  → Una frase che cattura il tema dominante della giornata, come un titolo di copertina.
+  → Deve essere incisiva, non neutra. Può essere una tensione, una domanda, un'affermazione forte.
+  → Esempi: "L'AI scrive codice. Tu scrivi le regole." / "Agenti ovunque, fiducia da costruire" / "Il momento in cui il copilota diventa pilota"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PATTERN LAYOUT — scegli in base al contenuto
+PROCESSO — fallo prima di costruire il JSON
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Questi sono punti di partenza, non template rigidi. Adattali al contenuto.
+1. Leggi tutti gli articoli e individua: qual è il tema dominante? Ci sono filoni secondari? C'è una tensione o contraddizione tra notizie diverse?
+2. Decidi il filo narrativo: la presentazione deve avere un senso dall'inizio alla fine, non essere una lista di notizie.
+3. Scegli i layout in base a quanto spazio merita ogni contenuto.
+4. Scrivi i testi come un editor, non come un summarizer.
 
-APERTURA (sempre prima slide)
-  → Titolo grande centrato a sinistra, frase introduttiva, data, pillole temi.
-  → Usa quando: inizio presentazione. Sempre.
-
-FOCUS 1 NOTIZIA — layout 60/40
-  → Colonna larga (60%): titolo grande, sintesi estesa, fonte.
-  → Colonna stretta (40%): analisi "perché conta", 2-3 punti chiave, contesto.
-  → Usa quando: una notizia è chiaramente dominante e merita profondità.
-
-CONFRONTO 2 NOTIZIE — griglia 50/50
-  → Due card uguali, stessa struttura interna: label, titolo, sintesi, fonte.
-  → Usa quando: due notizie hanno peso simile e raccontano angoli diversi dello stesso tema — o si commentano a vicenda.
-
-PANORAMICA 3 NOTIZIE — griglia 33/33/33
-  → Tre card compatte: label, titolo breve, sintesi 3 righe, fonte.
-  → Usa quando: ci sono più notizie minori dello stesso filone, o vuoi mostrare la varietà del giorno.
-
-LISTA CON PROTAGONISTA — layout 40/60
-  → Colonna sinistra: titolo sezione, lista 4-6 punti con pallino colorato.
-  → Colonna destra: approfondimento su uno dei punti, o contesto generale.
-  → Usa quando: ci sono molti segnali deboli da aggregare, o una lista di tool/aggiornamenti.
-
-CITAZIONE / TENSIONE — slide centrata
-  → Testo grande centrato, 2-3 righe max, seguito da breve spiegazione.
-  → Usa quando: vuoi isolare un'osservazione editoriale forte, una contraddizione, una domanda che emerge dai dati.
-
-CHIUSURA (sempre ultima slide)
-  → 3-4 blocchi takeaway: cosa fare, cosa monitorare, tool da esplorare, domanda aperta.
-  → Layout libero (griglia 2x2, lista, o colonne) in base a quanti takeaway hai.
-  → Usa quando: fine presentazione. Sempre.
+Restituisci SOLO un oggetto JSON valido, senza markdown, senza commenti, senza testo prima o dopo.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-REGOLE EDITORIALI
+LAYOUT DISPONIBILI — scegli in base al contenuto
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-- Minimo 5 slide, massimo 8. Qualità > quantità.
-- Il layout deve servire il contenuto. Se una notizia ha molto da dire, dagli spazio. Se sono 5 notizie minori, comprimile.
-- Titoli: rielaborati e incisivi, non copia-incolla dall'originale.
-- Sintesi: cosa è successo + perché conta per chi fa Vibe Coding + impatto concreto. Mai descrizioni generiche.
+"hero"
+  → Prima slide. Sempre presente, sempre prima.
+  → Usa per: inquadrare la giornata con un titolo editoriale forte.
+  Campi: headline (titolo grande, max 8 parole), intro (2 righe che spiegano cosa succede oggi), tags (2-4 pillole tematiche)
+
+"focus"
+  → Una notizia occupa tutta la slide: sinistra sintesi, destra analisi.
+  → Usa quando: una notizia è chiaramente dominante e ha molto da dire.
+  Campi: label, title, body (4-5 righe di sintesi), source, why (2-3 righe "perché conta"), points (2-3 punti chiave, array di stringhe)
+
+"two_cards"
+  → Due notizie affiancate, stesso peso.
+  → Usa quando: due notizie si commentano a vicenda, o hanno peso simile.
+  Campi: section (titolo sezione), card1{label, title, body, source}, card2{label, title, body, source}
+
+"three_cards"
+  → Tre notizie compatte affiancate.
+  → Usa quando: più notizie minori dello stesso filone, o panoramica della giornata.
+  Campi: section (titolo sezione), card1{label, title, body, source}, card2{label, title, body, source}, card3{label, title, body, source}
+
+"list_main"
+  → Sinistra: lista di 4-5 segnali/punti. Destra: approfondimento su uno.
+  → Usa quando: molti segnali deboli da aggregare, o lista di tool/aggiornamenti con un protagonista.
+  Campi: section, items (array di stringhe, max 5), main_label, main_title, main_body, main_source
+
+"quote"
+  → Slide centrata con osservazione editoriale forte.
+  → Usa quando: vuoi isolare una contraddizione, un pattern, una domanda aperta che emerge dai dati.
+  Campi: label ("INSIGHT DEL GIORNO" o simile), quote (frase forte, max 25 parole), context (2 righe di spiegazione)
+
+"closing"
+  → Ultima slide. Sempre presente, sempre ultima.
+  → Usa per: 3-4 takeaway concreti e azionabili.
+  Campi: takeaways (array di oggetti con: color ["indigo"|"green"|"orange"|"rose"], label, body)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REGOLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Minimo 5 slide, massimo 8. Prima sempre "hero", ultima sempre "closing".
+- Il layout deve servire il contenuto: se una notizia è ricca, usala in "focus"; se sono 3 notizie minori, usa "three_cards".
+- Titoli: rielaborati, incisivi. Non copiare dall'originale.
+- Sintesi: cosa è successo + perché conta per chi usa AI per programmare + impatto concreto.
 - NON inventare fatti non presenti negli articoli.
-- Fonte: solo il dominio (es. techcrunch.com).
-- Label categorie pertinenti: "AI Tools", "Open Source", "Dev Experience", "Mercato", "Sicurezza", "Ricerca", "Framework", ecc.
+- source: solo il dominio (es. techcrunch.com).
+- Labels pertinenti: "AI Tools", "Open Source", "Dev Experience", "Mercato", "Sicurezza", "Ricerca", "Framework", "LLM".
 - Scrivi in italiano, tono diretto e professionale.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-OUTPUT
+FORMATO OUTPUT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Restituisci SOLO i div delle slide. Niente <html>, <head>, <body>, niente markdown, niente commenti.
-Usa ESCLUSIVAMENTE stili inline. Non usare classi CSS."""
+{
+  "date": "22 Aprile 2026",
+  "slides": [
+    {"type": "hero", "headline": "...", "intro": "...", "tags": ["...", "..."]},
+    {"type": "focus", "label": "...", "title": "...", "body": "...", "source": "...", "why": "...", "points": ["...", "..."]},
+    {"type": "two_cards", "section": "...", "card1": {"label":"...","title":"...","body":"...","source":"..."}, "card2": {"label":"...","title":"...","body":"...","source":"..."}},
+    {"type": "three_cards", "section": "...", "card1": {...}, "card2": {...}, "card3": {...}},
+    {"type": "list_main", "section": "...", "items": ["..."], "main_label": "...", "main_title": "...", "main_body": "...", "main_source": "..."},
+    {"type": "quote", "label": "...", "quote": "...", "context": "..."},
+    {"type": "closing", "takeaways": [{"color": "green", "label": "...", "body": "..."}, {"color": "indigo", "label": "...", "body": "..."}]}
+  ]
+}"""
 
+
+# ─── HTML TEMPLATES ───────────────────────────────────────────────────────────
+
+SLIDE_BASE = "width:1280px;height:720px;position:relative;overflow:hidden;box-sizing:border-box;page-break-after:always;font-family:'Inter',system-ui,sans-serif;background:#0f172a;"
+
+ACCENT_COLORS = {
+    "indigo": "#6366f1",
+    "green":  "#34d399",
+    "orange": "#fb923c",
+    "rose":   "#f43f5e",
+}
+ACCENT_LIGHT = {
+    "indigo": "#a5b4fc",
+    "green":  "#6ee7b7",
+    "orange": "#fdba74",
+    "rose":   "#fda4af",
+}
+
+
+def _glow(color_hex: str, pos: str = "top-right") -> str:
+    positions = {
+        "top-right":    "top:-140px;right:-140px",
+        "bottom-left":  "bottom:-100px;left:-100px",
+        "center":       "top:50%;left:50%;transform:translate(-50%,-50%)",
+    }
+    return (
+        f'<div style="position:absolute;{positions[pos]};width:600px;height:600px;'
+        f'background:radial-gradient(circle,{color_hex}22 0%,transparent 65%);pointer-events:none;"></div>'
+    )
+
+
+def _accent_bar(color: str, vertical: bool = True) -> str:
+    if vertical:
+        return f'<div style="width:4px;height:28px;background:{color};border-radius:2px;flex-shrink:0;"></div>'
+    return f'<div style="width:44px;height:3px;background:{color};border-radius:2px;"></div>'
+
+
+def _label(text: str, color: str) -> str:
+    return (
+        f'<span style="color:{color};font-size:11px;font-weight:700;letter-spacing:.09em;'
+        f'text-transform:uppercase;display:block;margin-bottom:14px;">{text}</span>'
+    )
+
+
+def _pill(text: str, color: str) -> str:
+    return (
+        f'<span style="color:{color};background:{color}18;border:1px solid {color}35;'
+        f'font-size:12px;font-weight:600;padding:5px 14px;border-radius:99px;">{text}</span>'
+    )
+
+
+def _source(text: str) -> str:
+    return f'<span style="color:#64748b;font-size:11px;">{text}</span>'
+
+
+def render_hero(s: dict, date: str) -> str:
+    tags_html = "".join(_pill(t, "#6366f1") for t in s.get("tags", []))
+    return f"""
+<div style="{SLIDE_BASE}">
+  {_glow("#6366f1", "top-right")}
+  {_glow("#6366f1", "bottom-left")}
+  <div style="position:relative;z-index:1;height:100%;display:flex;flex-direction:column;justify-content:center;padding:72px 100px;">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:28px;">
+      {_accent_bar("#6366f1", vertical=False)}
+      <span style="color:#6366f1;font-size:13px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;">Vibe Coding Daily · {date}</span>
+    </div>
+    <h1 style="color:#f1f5f9;font-size:66px;font-weight:900;line-height:1.08;margin:0 0 28px;max-width:900px;">{s["headline"]}</h1>
+    <p style="color:#94a3b8;font-size:20px;line-height:1.65;max-width:720px;margin:0 0 44px;">{s["intro"]}</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">{tags_html}</div>
+  </div>
+</div>"""
+
+
+def render_focus(s: dict) -> str:
+    color = "#6366f1"
+    points_html = "".join(
+        f'<li style="color:#94a3b8;font-size:14px;line-height:1.7;margin-bottom:6px;">{p}</li>'
+        for p in s.get("points", [])
+    )
+    return f"""
+<div style="{SLIDE_BASE}">
+  <div style="height:100%;display:grid;grid-template-columns:3fr 2fr;">
+    <!-- sinistra: sintesi -->
+    <div style="background:#1e293b;padding:64px 56px;display:flex;flex-direction:column;justify-content:center;border-right:1px solid #334155;">
+      {_label(s.get("label",""), color)}
+      <h2 style="color:#f1f5f9;font-size:34px;font-weight:800;line-height:1.2;margin:0 0 20px;">{s["title"]}</h2>
+      {_accent_bar(color, vertical=False)}
+      <p style="color:#94a3b8;font-size:15px;line-height:1.72;margin:20px 0 0;flex:1;">{s["body"]}</p>
+      <div style="margin-top:auto;padding-top:32px;">{_source(s.get("source",""))}</div>
+    </div>
+    <!-- destra: analisi -->
+    <div style="padding:64px 48px;display:flex;flex-direction:column;justify-content:center;">
+      <p style="color:#a5b4fc;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin:0 0 16px;">Perché conta</p>
+      <p style="color:#cbd5e1;font-size:15px;line-height:1.72;margin:0 0 36px;">{s.get("why","")}</p>
+      <p style="color:#a5b4fc;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin:0 0 14px;">Da tenere d'occhio</p>
+      <ul style="padding-left:18px;margin:0;">{points_html}</ul>
+    </div>
+  </div>
+</div>"""
+
+
+def _card(data: dict, color: str, compact: bool = False) -> str:
+    pad = "24px" if compact else "32px"
+    title_size = "17px" if compact else "21px"
+    body_size = "13px" if compact else "14px"
+    return f"""
+<div style="background:#1e293b;border-radius:16px;padding:{pad};display:flex;flex-direction:column;border:1px solid #334155;min-width:0;">
+  {_label(data.get("label",""), color)}
+  <h3 style="color:#f1f5f9;font-size:{title_size};font-weight:700;line-height:1.3;margin:0 0 14px;">{data["title"]}</h3>
+  <p style="color:#94a3b8;font-size:{body_size};line-height:1.65;margin:0;flex:1;">{data["body"]}</p>
+  <div style="margin-top:20px;">{_source(data.get("source",""))}</div>
+</div>"""
+
+
+def render_two_cards(s: dict) -> str:
+    c1 = _card(s["card1"], "#6366f1")
+    c2 = _card(s["card2"], "#34d399")
+    return f"""
+<div style="{SLIDE_BASE}">
+  <div style="height:100%;display:flex;flex-direction:column;padding:56px 72px;">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:36px;">
+      {_accent_bar("#6366f1")}
+      <h2 style="color:#f1f5f9;font-size:22px;font-weight:700;margin:0;">{s.get("section","")}</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;flex:1;">{c1}{c2}</div>
+  </div>
+</div>"""
+
+
+def render_three_cards(s: dict) -> str:
+    c1 = _card(s["card1"], "#6366f1", compact=True)
+    c2 = _card(s["card2"], "#fb923c", compact=True)
+    c3 = _card(s["card3"], "#34d399", compact=True)
+    return f"""
+<div style="{SLIDE_BASE}">
+  <div style="height:100%;display:flex;flex-direction:column;padding:56px 72px;">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:36px;">
+      {_accent_bar("#fb923c")}
+      <h2 style="color:#f1f5f9;font-size:22px;font-weight:700;margin:0;">{s.get("section","")}</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;flex:1;">{c1}{c2}{c3}</div>
+  </div>
+</div>"""
+
+
+def render_list_main(s: dict) -> str:
+    items_html = "".join(
+        f'<li style="color:#cbd5e1;font-size:15px;line-height:1.7;margin-bottom:10px;padding-left:4px;">{item}</li>'
+        for item in s.get("items", [])
+    )
+    return f"""
+<div style="{SLIDE_BASE}">
+  <div style="height:100%;display:grid;grid-template-columns:2fr 3fr;">
+    <!-- sinistra: lista -->
+    <div style="background:#1e293b;padding:64px 48px;display:flex;flex-direction:column;border-right:1px solid #334155;">
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:32px;">
+        {_accent_bar("#fb923c")}
+        <h2 style="color:#f1f5f9;font-size:20px;font-weight:700;margin:0;">{s.get("section","")}</h2>
+      </div>
+      <ul style="padding-left:20px;margin:0;flex:1;">{items_html}</ul>
+    </div>
+    <!-- destra: protagonista -->
+    <div style="padding:64px 56px;display:flex;flex-direction:column;justify-content:center;">
+      {_label(s.get("main_label",""), "#6366f1")}
+      <h3 style="color:#f1f5f9;font-size:28px;font-weight:800;line-height:1.25;margin:0 0 20px;">{s.get("main_title","")}</h3>
+      {_accent_bar("#6366f1", vertical=False)}
+      <p style="color:#94a3b8;font-size:15px;line-height:1.72;margin:20px 0 0;">{s.get("main_body","")}</p>
+      <div style="margin-top:auto;padding-top:32px;">{_source(s.get("main_source",""))}</div>
+    </div>
+  </div>
+</div>"""
+
+
+def render_quote(s: dict) -> str:
+    return f"""
+<div style="{SLIDE_BASE}">
+  {_glow("#6366f1", "center")}
+  <div style="position:relative;z-index:1;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 120px;text-align:center;">
+    <span style="color:#6366f1;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:36px;display:block;">{s.get("label","INSIGHT DEL GIORNO")}</span>
+    <blockquote style="color:#f1f5f9;font-size:34px;font-weight:700;line-height:1.4;margin:0 0 44px;font-style:italic;">"{s["quote"]}"</blockquote>
+    <p style="color:#64748b;font-size:16px;line-height:1.65;max-width:660px;margin:0;">{s.get("context","")}</p>
+  </div>
+</div>"""
+
+
+def render_closing(s: dict) -> str:
+    takeaways = s.get("takeaways", [])
+    cols = min(len(takeaways), 2)
+    grid = f"grid-template-columns:{'1fr ' * cols}".strip()
+    cards_html = ""
+    for t in takeaways:
+        c = ACCENT_COLORS.get(t.get("color", "indigo"), "#6366f1")
+        cl = ACCENT_LIGHT.get(t.get("color", "indigo"), "#a5b4fc")
+        cards_html += (
+            f'<div style="background:#1e293b;border-radius:14px;padding:28px;'
+            f'border:1px solid #334155;border-left:3px solid {c};">'
+            f'<p style="color:{cl};font-size:11px;font-weight:700;letter-spacing:.09em;'
+            f'text-transform:uppercase;margin:0 0 12px;">{t.get("label","")}</p>'
+            f'<p style="color:#cbd5e1;font-size:14px;line-height:1.65;margin:0;">{t.get("body","")}</p>'
+            f'</div>'
+        )
+    return f"""
+<div style="{SLIDE_BASE}">
+  {_glow("#34d399", "bottom-left")}
+  <div style="position:relative;z-index:1;height:100%;display:flex;flex-direction:column;justify-content:center;padding:60px 80px;">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:40px;">
+      {_accent_bar("#34d399")}
+      <h2 style="color:#f1f5f9;font-size:22px;font-weight:700;margin:0;">TAKEAWAY DI OGGI</h2>
+    </div>
+    <div style="display:grid;{grid};gap:20px;">{cards_html}</div>
+  </div>
+</div>"""
+
+
+RENDERERS = {
+    "hero":        render_hero,
+    "focus":       render_focus,
+    "two_cards":   render_two_cards,
+    "three_cards": render_three_cards,
+    "list_main":   render_list_main,
+    "quote":       render_quote,
+    "closing":     render_closing,
+}
+
+
+# ─── HTML WRAPPER ─────────────────────────────────────────────────────────────
 
 HTML_WRAPPER = """<!DOCTYPE html>
 <html lang="it">
@@ -121,13 +360,12 @@ HTML_WRAPPER = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <title>Vibe Coding Daily — {date}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,900;1,700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,700&display=swap" rel="stylesheet">
   <style>
-    * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', system-ui, sans-serif; }}
-    body {{ background: #0a0f1e; }}
-    @page {{ size: 1280px 720px; margin: 0; }}
-    .slide {{ page-break-after: always; }}
-    .slide:last-child {{ page-break-after: avoid; }}
+    * {{ margin:0;padding:0;box-sizing:border-box; }}
+    body {{ background:#000; }}
+    @page {{ size:{w}px {h}px; margin:0; }}
+    div[style*="page-break-after"]:last-child {{ page-break-after:avoid!important; }}
   </style>
 </head>
 <body>
@@ -136,6 +374,8 @@ HTML_WRAPPER = """<!DOCTYPE html>
 </html>"""
 
 
+# ─── MAIN FUNCTIONS ───────────────────────────────────────────────────────────
+
 def generate_html(articles: list[dict]) -> str:
     client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
@@ -143,38 +383,51 @@ def generate_html(articles: list[dict]) -> str:
     articles_text = "\n\n".join(
         f"[{i+1}] {a['title']}\n"
         f"Fonte: {a['source']} | URL: {a['url']}\n"
-        f"{a['snippet'][:200]}"
+        f"{a['snippet'][:220]}"
         for i, a in enumerate(capped)
     )
 
     date_str = datetime.now().strftime("%d %B %Y")
     user_message = (
         f"Data di oggi: {date_str}\n\n"
-        f"Articoli raccolti ({len(capped)} selezionati):\n\n"
-        f"{articles_text}\n\n"
-        f"Crea la presentazione seguendo esattamente i componenti e gli stili inline mostrati. "
-        f"Non usare classi CSS. Solo stili inline. Inizia con la slide HERO."
+        f"Articoli ({len(capped)}):\n\n{articles_text}\n\n"
+        f"Analizza il contenuto, decidi il filo narrativo e restituisci il JSON della presentazione."
     )
 
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "user",   "content": user_message},
         ],
-        max_tokens=6000,
-        temperature=0.55,
+        max_tokens=4000,
+        temperature=0.5,
     )
 
-    content = response.choices[0].message.content.strip()
+    raw = response.choices[0].message.content.strip()
+    raw = re.sub(r"^```[a-z]*\n?", "", raw)
+    raw = re.sub(r"\n?```$", "", raw)
 
-    # Strip markdown fences if present
-    content = re.sub(r"^```[a-z]*\n?", "", content)
-    content = re.sub(r"\n?```$", "", content)
+    data = json.loads(raw)
+    date_label = data.get("date", date_str)
+
+    slides_html = []
+    for slide in data.get("slides", []):
+        stype = slide.get("type")
+        renderer = RENDERERS.get(stype)
+        if renderer is None:
+            continue
+        if stype == "hero":
+            html = renderer(slide, date_label)
+        else:
+            html = renderer(slide)
+        slides_html.append(html)
 
     return HTML_WRAPPER.format(
-        date=date_str,
-        content=content.strip(),
+        date=date_label,
+        w=SLIDE_W,
+        h=SLIDE_H,
+        content="\n".join(slides_html),
     )
 
 
