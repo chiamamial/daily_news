@@ -1,10 +1,20 @@
+import time
 import requests
 import feedparser
 from urllib.parse import quote
 
 
+def _since_timestamp(days: int = 3) -> int:
+    return int(time.time()) - days * 86400
+
+
 def fetch_hackernews(query: str, limit: int = 15) -> list[dict]:
-    url = f"https://hn.algolia.com/api/v1/search?query={quote(query)}&tags=story&hitsPerPage={limit}"
+    since = _since_timestamp(days=3)
+    url = (
+        f"https://hn.algolia.com/api/v1/search?query={quote(query)}"
+        f"&tags=story&hitsPerPage={limit}"
+        f"&numericFilters=created_at_i>{since}"
+    )
     r = requests.get(url, timeout=10)
     r.raise_for_status()
     items = []
@@ -16,12 +26,15 @@ def fetch_hackernews(query: str, limit: int = 15) -> list[dict]:
                 "source": "Hacker News",
                 "snippet": (hit.get("story_text") or "")[:400],
                 "points": hit.get("points", 0),
+                "created_at": hit.get("created_at_i", 0),
             })
     return items
 
 
 def fetch_devto(tag: str, limit: int = 10) -> list[dict]:
-    url = f"https://dev.to/api/articles?tag={tag}&per_page={limit}&top=1"
+    # Non usare top=N: restituisce articoli popolari di tutti i tempi.
+    # state=fresh + sort per published_at porta articoli recenti.
+    url = f"https://dev.to/api/articles?tag={tag}&per_page={limit}&state=fresh"
     r = requests.get(url, timeout=10, headers={"User-Agent": "VibeNewsBotDailyV1"})
     if r.status_code != 200:
         return []
@@ -33,6 +46,7 @@ def fetch_devto(tag: str, limit: int = 10) -> list[dict]:
             "source": "Dev.to",
             "snippet": art.get("description") or "",
             "points": art.get("positive_reactions_count", 0),
+            "created_at": 0,
         })
     return items
 
@@ -83,5 +97,19 @@ def scrape_all() -> list[dict]:
             seen_urls.add(a["url"])
             unique.append(a)
 
-    unique.sort(key=lambda x: x["points"], reverse=True)
-    return unique
+    # Prende i 5 più popolari + i rimanenti ordinati per recency, poi mescola.
+    # Evita che gli stessi articoli virali di tutti i tempi occupino sempre i top 10.
+    by_points = sorted(unique, key=lambda x: x["points"], reverse=True)
+    top_popular = by_points[:5]
+    rest_recent = [a for a in unique if a not in top_popular]
+    rest_recent.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+
+    merged = top_popular + rest_recent
+    # Deduplica di sicurezza dopo il merge
+    seen = set()
+    final = []
+    for a in merged:
+        if a["url"] not in seen:
+            seen.add(a["url"])
+            final.append(a)
+    return final

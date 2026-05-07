@@ -379,7 +379,7 @@ HTML_WRAPPER = """<!DOCTYPE html>
 def generate_html(articles: list[dict]) -> str:
     client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
-    capped = articles[:10]
+    capped = articles[:20]
     articles_text = "\n\n".join(
         f"[{i+1}] {a['title']}\n"
         f"Fonte: {a['source']} | URL: {a['url']}\n"
