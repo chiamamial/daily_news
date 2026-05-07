@@ -8,7 +8,7 @@ on:
 jobs:
   generate-and-send:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -20,13 +20,8 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Install Playwright + Chromium
-        run: |
-          playwright install chromium
-          playwright install-deps chromium
 
       - name: Generate and send
         env:
@@ -35,12 +30,3 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
         run: python main.py
-
-      - name: Upload PDF as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vibe-coding-daily-${{ github.run_id }}
-          path: /tmp/vibe_coding_daily.pdf
-          retention-days: 14
-          if-no-files-found: ignore
